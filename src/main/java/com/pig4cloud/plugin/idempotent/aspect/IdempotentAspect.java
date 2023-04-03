@@ -11,6 +11,7 @@ import org.aspectj.lang.annotation.Before;
 import org.aspectj.lang.annotation.Pointcut;
 import org.aspectj.lang.reflect.MethodSignature;
 import org.redisson.Redisson;
+import org.redisson.api.RLock;
 import org.redisson.api.RMapCache;
 import org.redisson.api.RedissonClient;
 import org.slf4j.Logger;
@@ -99,16 +100,26 @@ public class IdempotentAspect {
 			// had stored
 			throw new IdempotentException(info);
 		}
-		synchronized (this) {
-			v1 = rMapCache.putIfAbsent(key, value, expireTime, timeUnit);
-			if (null != v1) {
+		RLock lock = redissonClient.getLock(key);
+		try {
+			if(lock.tryLock()) {
+				v1 = rMapCache.putIfAbsent(key, value, expireTime, timeUnit);
+				if (null != v1) {
+					throw new IdempotentException(info);
+				}
+				else {
+					LOGGER.info("[idempotent]:has stored key={},value={},expireTime={}{},now={}", key, value, expireTime,
+							timeUnit, LocalDateTime.now().toString());
+				}
+			}else {
 				throw new IdempotentException(info);
 			}
-			else {
-				LOGGER.info("[idempotent]:has stored key={},value={},expireTime={}{},now={}", key, value, expireTime,
-						timeUnit, LocalDateTime.now().toString());
-			}
+		} catch (IdempotentException e) {
+			throw new IdempotentException(e.getMessage());
+		}finally {
+			lock.unlock();
 		}
+
 
 		Map<String, Object> map = THREAD_CACHE.get();
 		map.put(KEY, key);
